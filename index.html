@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Drift</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; }
+  body.idle { cursor: none; }
+  #hint {
+    position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    font: 500 16px/1.5 system-ui, sans-serif; color: #fff; text-align: center;
+    opacity: .85; transition: opacity 2s ease; pointer-events: none;
+  }
+  #hint.gone { opacity: 0; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">Click or press F for full screen.<br>The display is kept awake automatically. Press W to turn that off.</div>
+<script>
+(() => {
+  const cv = document.getElementById('c');
+  const ctx = cv.getContext('2d');
+  const hint = document.getElementById('hint');
+  let W, H, dpr;
+
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = cv.width = innerWidth * dpr;
+    H = cv.height = innerHeight * dpr;
+  }
+  addEventListener('resize', resize);
+  resize();
+
+  // Soft orbs that wander the whole screen (edges included) and cycle through every hue,
+  // so no pixel stays on the same colour or brightness for long.
+  const N = 7;
+  const orbs = Array.from({ length: N }, (_, i) => ({
+    x: Math.random(), y: Math.random(),
+    vx: (Math.random() - .5) * .00006, vy: (Math.random() - .5) * .00006,
+    r: .22 + Math.random() * .2,
+    hue: (i / N) * 360,
+    hueSpeed: .004 + Math.random() * .006,
+    phase: Math.random() * Math.PI * 2
+  }));
+
+  let last = performance.now();
+  function frame(t) {
+    const dt = Math.min(t - last, 50);
+    last = t;
+
+    // Base wash slowly rotates through the spectrum at very low brightness.
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = `hsl(${(t * .002) % 360} 40% 4%)`;
+    ctx.fillRect(0, 0, W, H);
+    ctx.globalCompositeOperation = 'lighter';
+
+    const s = Math.max(W, H);
+    for (const o of orbs) {
+      o.x += o.vx * dt; o.y += o.vy * dt;
+      if (o.x < -.1 || o.x > 1.1) o.vx *= -1;
+      if (o.y < -.1 || o.y > 1.1) o.vy *= -1;
+      o.hue = (o.hue + o.hueSpeed * dt * .1) % 360;
+      const pulse = .75 + .25 * Math.sin(t * .0003 + o.phase);
+      const r = o.r * s * pulse;
+      const g = ctx.createRadialGradient(o.x * W, o.y * H, 0, o.x * W, o.y * H, r);
+      g.addColorStop(0, `hsla(${o.hue}, 80%, 45%, .5)`);
+      g.addColorStop(1, `hsla(${o.hue}, 80%, 45%, 0)`);
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, W, H);
+    }
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  // Full screen
+  function toggleFS() {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else document.documentElement.requestFullscreen().catch(() => {});
+  }
+
+  // Keep the display awake automatically.
+  // 1) Screen Wake Lock API (Chrome/Edge/Safari 16.4+/Firefox 126+)
+  // 2) Fallback: a hidden, muted video fed by the canvas. Browsers treat playing video as
+  //    "someone is watching" and hold off the screen saver.
+  let wantLock = true, lock = null, fallback = null;
+
+  async function acquire() {
+    if (!wantLock || document.visibilityState !== 'visible') return;
+    try {
+      if ('wakeLock' in navigator) {
+        lock = await navigator.wakeLock.request('screen');
+        lock.addEventListener('release', () => { lock = null; });
+        return;
+      }
+    } catch (e) {}
+    startFallback();
+  }
+  function startFallback() {
+    if (fallback || !cv.captureStream) return;
+    fallback = document.createElement('video');
+    fallback.muted = true; fallback.loop = true; fallback.playsInline = true;
+    fallback.setAttribute('playsinline', '');
+    fallback.style.cssText = 'position:fixed;width:2px;height:2px;opacity:.01;pointer-events:none;';
+    fallback.srcObject = cv.captureStream(5);
+    document.body.appendChild(fallback);
+    fallback.play().catch(() => {});
+  }
+  async function release() {
+    if (lock) { try { await lock.release(); } catch (e) {} lock = null; }
+    if (fallback) { fallback.pause(); fallback.remove(); fallback = null; }
+  }
+
+  // The lock drops when the tab is hidden, so take it back when you return.
+  document.addEventListener('visibilitychange', acquire);
+  document.addEventListener('fullscreenchange', acquire);
+  // Some browsers only grant it after a gesture, so retry on first interaction too.
+  ['click', 'keydown', 'pointerdown'].forEach(ev =>
+    addEventListener(ev, () => { if (!lock && !fallback) acquire(); }, { passive: true }));
+  acquire();
+
+  addEventListener('keydown', e => {
+    if (e.key === 'f' || e.key === 'F') toggleFS();
+    if (e.key === 'w' || e.key === 'W') {
+      wantLock = !wantLock;
+      wantLock ? acquire() : release();
+    }
+  });
+  cv.addEventListener('click', toggleFS);
+
+  // Hint disappears so no static text lingers; cursor hides when idle.
+  setTimeout(() => { hint.classList.add('gone'); setTimeout(() => hint.remove(), 2200); }, 6000);
+  let idle;
+  function wake() { document.body.classList.remove('idle'); clearTimeout(idle); idle = setTimeout(() => document.body.classList.add('idle'), 2000); }
+  addEventListener('mousemove', wake); wake();
+})();
+</script>
+</body>
+</html>
